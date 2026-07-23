@@ -14,6 +14,9 @@ from langchain_core.runnables import RunnableConfig
 from rich import print as rprint
 from langchain.tools import tool
 
+YELLOW_COLOR = "#fab387"
+SAPPHIRE_COLOR = "#74c7ec"
+
 
 @tool
 def add_numbers(a: int, b: int):
@@ -21,35 +24,64 @@ def add_numbers(a: int, b: int):
     return a + b
 
 
-memory_checkpointer = InMemorySaver()
+show_reasoning = True
 
-llm = init_chat_model(model="nvidia:stepfun-ai/step-3.7-flash")
 
-agent = create_agent(
-    model=llm,
-    system_prompt=SystemMessage(content="You are a humuorous agent"),
-    # checkpointer=memory_checkpointer,
+class Agent:
+    def __init__(
+        self, model: str, provider: str, tools: list, system_prompt: SystemMessage
+    ):
+        self.model = model
+        self.tools = tools
+        self.system_prompt = system_prompt
+        self.memory_checkpointer = InMemorySaver()
+        self.model_provider = provider
+        self.llm = init_chat_model(model=model, model_provider=self.model_provider)
+        self.config: RunnableConfig = {"configurable": {"thread_id": uuid7()}}
+
+        self.agent = create_agent(
+            model=self.llm,
+            system_prompt=self.system_prompt,
+            checkpointer=self.memory_checkpointer,
+            tools=self.tools,
+        )
+
+    def _generate_streaming_response(self, prompt: str):
+        for message, metadata in self.agent.stream(
+            {"messages": [HumanMessage(content=prompt)]},
+            config=self.config,
+            stream_mode="messages",
+        ):
+            if message:
+                yield message
+
+    def _render_cli_response(self, prompt):
+        for message in self._generate_streaming_response(prompt=prompt):
+            if isinstance(message, AIMessageChunk):
+                reasoning = message.additional_kwargs.get("reasoning_content")
+                if message.content:
+                    rprint(
+                        f"[{SAPPHIRE_COLOR}]{message.content}[{SAPPHIRE_COLOR}]",
+                        end="",
+                        flush=True,
+                    )
+                if reasoning and show_reasoning:
+                    rprint(
+                        f"[{YELLOW_COLOR}]{reasoning}[/{YELLOW_COLOR}]",
+                        end="",
+                    )
+                for tc in message.tool_call_chunks:
+                    if tc.get("name"):
+                        rprint(f"\nCalling tool: {tc['name']}")
+            elif isinstance(message, ToolMessage):
+                rprint(f"\nTool returned: {message.content}")
+
+
+Terment = Agent(
+    model="stepfun-ai/step-3.7-flash",
+    provider="nvidia",
     tools=[add_numbers],
+    system_prompt=SystemMessage("You are a funny agent"),
 )
-config: RunnableConfig = {"configurable": {"thread_id": uuid7()}}
 
-for message, metadata in agent.stream(
-    {"messages": [HumanMessage(content="Add 10000 and 299247")]},
-    config=config,
-    stream_mode="messages",
-):
-    if isinstance(message, AIMessageChunk):
-
-        reasoning = message.additional_kwargs.get("reasoning_content")
-        if reasoning:
-            print(reasoning, end="", flush=True)
-
-        for tc in message.tool_call_chunks:
-            if tc.get("name"):
-                print(f"\nCalling tool: {tc['name']}")
-
-        if message.content:
-            print(message.content, end="", flush=True)
-
-    elif isinstance(message, ToolMessage):
-        print(f"\nTool returned: {message.content}")
+Terment._render_cli_response("Indie game devs")
